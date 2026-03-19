@@ -461,10 +461,220 @@ export default function App() {
 
   // ── Main pipeline ─────────────────────────────────────────────────────────
   const DEPTH_CONFIG = {
-    quick:    { label: "up to 10", maxTokens: 4000 },
-    standard: { label: "up to 30", maxTokens: 10000 },
-    extended: { label: "up to 50", maxTokens: 18000 },
+    quick:    { maxPosts: 10, maxPages: 2 },
+    standard: { maxPosts: 30, maxPages: 5 },
+    extended: { maxPosts: 50, maxPages: 8 },
   };
+
+  // Fetch raw HTML via the server-side proxy (no CORS issues)
+  async function fetchPage(pageUrl) {
+    const res = await fetch(`/api/fetch-page?url=${encodeURIComponent(pageUrl)}`, {
+      headers: { "x-app-password": passwordRef.current },
+    });
+    if (!res.ok) throw new Error(`Failed to fetch ${pageUrl}: ${res.status}`);
+    return res.text();
+  }
+
+  // Extract site name from parsed document
+  function parseSiteName(doc, pageUrl) {
+    return (
+      doc.querySelector('meta[property="og:site_name"]')?.getAttribute("content") ||
+      doc.querySelector("title")?.textContent?.split(/[|\-–]/)[0]?.trim() ||
+      new URL(pageUrl).hostname.replace(/^www\./, "")
+    );
+  }
+
+  // Extract blog post links from an index/listing page
+  function findPostLinks(doc, baseUrl) {
+    const base = new URL(baseUrl).origin;
+    const selectors = [
+      'article a[rel="bookmark"]',
+      "h1.entry-title a, h2.entry-title a, h3.entry-title a",
+      ".post-title a, .entry-title a",
+      "article h2 a, article h3 a",
+      ".blog-post a, .post-card a",
+      'a[href*="/blog/"]',
+    ];
+    const seen = new Set();
+    const links = [];
+    for (const sel of selectors) {
+      doc.querySelectorAll(sel).forEach((a) => {
+        const href = a.href || a.getAttribute("href") || "";
+        if (!href) return;
+        let abs;
+        try { abs = new URL(href, baseUrl).href; } catch { return; }
+        // Only same-domain, non-index links that look like posts
+        if (!abs.startsWith(base)) return;
+        if (seen.has(abs)) return;
+        // Filter out tag/category/author/page index pages
+        if (/\/(tag|category|author|page|feed)\//i.test(abs)) return;
+        if (abs === baseUrl || abs.replace(/\/$/, "") === baseUrl.replace(/\/$/, "")) return;
+        seen.add(abs);
+        links.push(abs);
+      });
+      if (links.length > 0) break; // Use first selector that yields results
+    }
+    // Fallback: any same-domain links that look like posts (have path depth > 1)
+    if (links.length === 0) {
+      doc.querySelectorAll("a[href]").forEach((a) => {
+        const href = a.getAttribute("href") || "";
+        let abs;
+        try { abs = new URL(href, baseUrl).href; } catch { return; }
+        if (!abs.startsWith(base)) return;
+        if (seen.has(abs)) return;
+        const path = new URL(abs).pathname;
+        if (/\/(tag|category|author|page|feed)\//i.test(abs)) return;
+        if (path.split("/").filter(Boolean).length < 1) return;
+        if (abs === baseUrl || abs.replace(/\/$/, "") === baseUrl.replace(/\/$/, "")) return;
+        seen.add(abs);
+        links.push(abs);
+      });
+    }
+    return links;
+  }
+
+  // Find next pagination page URL
+  function findNextPageUrl(doc, currentUrl) {
+    const next =
+      doc.querySelector("a.next.page-numbers") ||
+      doc.querySelector('a[rel="next"]') ||
+      Array.from(doc.querySelectorAll("a")).find(
+        (a) => /next|›|»/i.test(a.textContent) && a.href
+      );
+    if (!next) return null;
+    try {
+      const abs = new URL(next.getAttribute("href") || next.href, currentUrl).href;
+      return abs !== currentUrl ? abs : null;
+    } catch { return null; }
+  }
+
+  // Parse a single blog post's HTML into structured data
+  function parsePost(html, postUrl, baseUrl) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const base = new URL(baseUrl).origin;
+
+    // Title
+    const title =
+      doc.querySelector("h1.entry-title, h1.post-title, h1")?.textContent?.trim() ||
+      doc.querySelector('meta[property="og:title"]')?.getAttribute("content") ||
+      doc.querySelector("title")?.textContent?.split(/[|\-–]/)[0]?.trim() ||
+      postUrl;
+
+    // Publish date
+    let publishDate = "";
+    const timeEl = doc.querySelector("time[datetime]");
+    if (timeEl) {
+      publishDate = timeEl.getAttribute("datetime")?.split("T")[0] || "";
+    }
+    if (!publishDate) {
+      publishDate =
+        doc.querySelector('meta[property="article:published_time"]')?.getAttribute("content")?.split("T")[0] ||
+        doc.querySelector(".entry-date, .post-date, .published")?.textContent?.trim() ||
+        "";
+    }
+    // Normalise to YYYY-MM-DD
+    if (publishDate && !/^\d{4}-\d{2}-\d{2}$/.test(publishDate)) {
+      const d = new Date(publishDate);
+      if (!isNaN(d)) publishDate = d.toISOString().split("T")[0];
+    }
+
+    // Content area
+    const contentEl =
+      doc.querySelector(".entry-content, .post-content, .article-content, article .content") ||
+      doc.querySelector("main article, article, main, [role='main']");
+
+    // Word count
+    const contentText = contentEl?.innerText || contentEl?.textContent || "";
+    const wordCount = contentText.trim().split(/\s+/).filter(Boolean).length;
+
+    // Featured image
+    const ogImage = doc.querySelector('meta[property="og:image"]')?.getAttribute("content") || "";
+    const wpPostImg = contentEl?.querySelector(".wp-post-image, .featured-image img, figure.post-thumbnail img");
+    const hasFeaturedImage = !!(ogImage || wpPostImg);
+    const featuredImageAlt = wpPostImg?.getAttribute("alt") || (ogImage ? "featured image" : "");
+
+    // Content images
+    const allImgs = Array.from(contentEl?.querySelectorAll("img") || []);
+    const contentImages = allImgs.length;
+    const contentImagesWithAlt = allImgs.filter((i) => i.getAttribute("alt")?.trim()).length;
+    const contentImagesMissingAlt = allImgs
+      .filter((i) => !i.getAttribute("alt")?.trim())
+      .slice(0, 5)
+      .map((i) => ({ src: i.src || i.getAttribute("src") || "", context: i.closest("figure")?.textContent?.trim().slice(0, 80) || "" }));
+
+    // Links
+    const allLinks = Array.from(contentEl?.querySelectorAll("a[href]") || []);
+    const internalLinks = allLinks.filter((a) => {
+      try { return new URL(a.href, postUrl).origin === base; } catch { return false; }
+    }).length;
+    const externalLinks = allLinks.filter((a) => {
+      try {
+        const u = new URL(a.href, postUrl);
+        return u.origin !== base && /^https?:/.test(u.protocol);
+      } catch { return false; }
+    }).length;
+
+    // Meta description
+    const metaDescription =
+      doc.querySelector('meta[name="description"]')?.getAttribute("content") ||
+      doc.querySelector('meta[property="og:description"]')?.getAttribute("content") ||
+      "";
+
+    // Headings
+    const headings = Array.from(doc.querySelectorAll("h1, h2, h3"))
+      .map((h) => h.textContent.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    // Excerpt (first 2 sentences from content)
+    const firstPara = contentEl?.querySelector("p")?.textContent?.trim() || "";
+    const excerpt = firstPara.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+
+    // Keywords from title + h2 headings
+    const stopWords = new Set(["the","a","an","and","or","but","in","on","at","to","for","of","with","by","from","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","could","should","may","might","that","this","these","those","it","its","we","our","you","your","they","their","how","what","why","when","where","which"]);
+    const kwText = [title, ...headings.filter((h) => /^h2$/i.test(h))].join(" ").toLowerCase();
+    const kwCounts = {};
+    kwText.match(/\b[a-z]{4,}\b/g)?.forEach((w) => {
+      if (!stopWords.has(w)) kwCounts[w] = (kwCounts[w] || 0) + 1;
+    });
+    const detectedKeywords = Object.entries(kwCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([w]) => w);
+
+    // Keyword in title / first paragraph
+    const primaryKeyword = detectedKeywords[0] || "";
+    const titleLower = title.toLowerCase();
+    const firstParaLower = firstPara.toLowerCase();
+    const keywordInTitle = primaryKeyword ? titleLower.includes(primaryKeyword) : false;
+    const keywordInFirstParagraph = primaryKeyword ? firstParaLower.includes(primaryKeyword) : false;
+
+    // Unique ID from URL slug
+    const id = new URL(postUrl).pathname.replace(/\/$/, "").split("/").pop() || postUrl;
+
+    return {
+      id,
+      title,
+      url: postUrl,
+      publishDate,
+      wordCount,
+      hasFeaturedImage,
+      featuredImageAlt,
+      contentImages,
+      contentImagesWithAlt,
+      contentImagesMissingAlt,
+      internalLinks,
+      externalLinks,
+      brokenLinks: [],
+      metaDescription,
+      headings,
+      detectedKeywords,
+      keywordInTitle,
+      keywordInFirstParagraph,
+      excerpt,
+    };
+  }
 
   const runAudit = useCallback(async () => {
     setPhase("crawling");
@@ -472,63 +682,68 @@ export default function App() {
     setReport(null);
     setErrorMsg("");
 
-    const { label: depthLabel, maxTokens: crawlTokens } = DEPTH_CONFIG[crawlDepth];
+    const { maxPosts, maxPages } = DEPTH_CONFIG[crawlDepth];
 
     try {
+      // ── Step 1: Fetch blog index ────────────────────────────────────────────
       addLog("🔍 Fetching blog index from " + url + "…");
-      addLog("📄 Parsing blog post links…");
+      let indexHtml;
+      try { indexHtml = await fetchPage(url); }
+      catch (e) { throw new Error("Could not reach " + url + ". Check the URL and try again."); }
 
-      const crawlPrompt = `You are a web crawler and SEO analyst. Given the blog URL "${url}", generate a realistic set of ${depthLabel} blog posts that would plausibly exist on this site. If the site appears to have many posts, generate as many as possible up to ${depthLabel.split(" ").pop()}.
+      const indexParser = new DOMParser();
+      const indexDoc = indexParser.parseFromString(indexHtml, "text/html");
+      const siteName = parseSiteName(indexDoc, url);
 
-Return ONLY valid JSON (no markdown, no backticks) in this exact structure:
-{
-  "siteName": "Brand name inferred from URL",
-  "blogs": [
-    {
-      "id": "unique-slug",
-      "title": "Blog Post Title",
-      "url": "${url}/slug",
-      "publishDate": "YYYY-MM-DD",
-      "wordCount": 1234,
-      "hasFeaturedImage": true,
-      "featuredImageAlt": "alt text or empty string if missing",
-      "contentImages": 2,
-      "contentImagesWithAlt": 1,
-      "contentImagesMissingAlt": [{"src": "image-url.jpg", "context": "surrounding text describing what image shows"}],
-      "internalLinks": 3,
-      "externalLinks": 2,
-      "brokenLinks": ["url1"],
-      "excerpt": "2-3 sentence summary",
-      "detectedKeywords": ["keyword1", "keyword2"],
-      "keywordInTitle": true,
-      "keywordInFirstParagraph": true,
-      "metaDescription": "meta description text or empty",
-      "headings": ["H1 title", "H2 subheading 1", "H2 subheading 2"]
-    }
-  ]
-}
+      // ── Step 2: Collect post links across paginated index ──────────────────
+      let allPostUrls = findPostLinks(indexDoc, url);
+      let currentPageUrl = url;
+      let pagesFetched = 1;
 
-Make the data realistic and varied — some blogs should have issues. Dates should span 2020–2024. Make 2-3 blogs have very similar topics that could be merged.`;
-
-      addLog("🤖 AI analyzing site structure…");
-      const crawlRaw = await callClaude(
-        [{ role: "user", content: crawlPrompt }],
-        "You are an SEO crawler. Return only valid JSON, no other text.",
-        crawlTokens, passwordRef.current
-      );
-
-      let crawlData;
-      try {
-        crawlData = JSON.parse(crawlRaw.replace(/```json|```/g, "").trim());
-      } catch {
-        throw new Error("Failed to parse site data. Please check the URL and try again.");
+      while (allPostUrls.length < maxPosts && pagesFetched < maxPages) {
+        const nextUrl = findNextPageUrl(indexDoc, currentPageUrl);
+        if (!nextUrl) break;
+        addLog(`📄 Following pagination (page ${pagesFetched + 1})…`);
+        try {
+          const nextHtml = await fetchPage(nextUrl);
+          const nextDoc = indexParser.parseFromString(nextHtml, "text/html");
+          const newLinks = findPostLinks(nextDoc, url);
+          const before = allPostUrls.length;
+          const combined = [...new Set([...allPostUrls, ...newLinks])];
+          allPostUrls = combined;
+          if (allPostUrls.length === before) break; // no new links found
+          currentPageUrl = nextUrl;
+          pagesFetched++;
+          // Update indexDoc for next iteration's findNextPageUrl call
+          Object.assign(indexDoc, nextDoc);
+        } catch { break; }
       }
 
-      addLog(`✅ Found ${crawlData.blogs.length} blog posts`);
+      const postUrls = allPostUrls.slice(0, maxPosts);
+      addLog(`✅ Found ${postUrls.length} blog post${postUrls.length !== 1 ? "s" : ""} (checked ${pagesFetched} page${pagesFetched !== 1 ? "s" : ""})`);
+      if (postUrls.length === 0) throw new Error("No blog posts found at that URL. Make sure it's a blog listing page.");
+
       setPhase("analyzing");
 
+      // ── Step 3: Fetch + parse each post in batches ─────────────────────────
+      addLog(`📊 Analyzing ${postUrls.length} blog posts…`);
+      const BATCH = 5;
+      const rawPosts = [];
+      for (let i = 0; i < postUrls.length; i += BATCH) {
+        const batch = postUrls.slice(i, i + BATCH);
+        const results = await Promise.allSettled(batch.map(async (postUrl) => {
+          const html = await fetchPage(postUrl);
+          return parsePost(html, postUrl, url);
+        }));
+        results.forEach((r) => { if (r.status === "fulfilled") rawPosts.push(r.value); });
+        if (i + BATCH < postUrls.length) {
+          addLog(`  ↳ Processed ${Math.min(i + BATCH, postUrls.length)} / ${postUrls.length}…`);
+        }
+      }
+
+      // ── Step 4: Score each post ────────────────────────────────────────────
       addLog("📊 Scoring SEO metrics for each post…");
-      const scoredBlogs = crawlData.blogs.map((blog) => {
+      const scoredBlogs = rawPosts.map((blog) => {
         const age = monthsAgo(blog.publishDate) || 0;
         const scores = {
           featuredImage: blog.hasFeaturedImage ? (blog.featuredImageAlt ? 100 : 60) : 0,
@@ -571,7 +786,7 @@ Generate 3-5 specific, actionable recommendations. Return ONLY JSON:
       );
 
       addLog("🔗 Running cross-blog duplicate & merge analysis…");
-      const mergePrompt = `Here are ${blogsWithRecs.length} blog posts from ${crawlData.siteName}:
+      const mergePrompt = `Here are ${blogsWithRecs.length} blog posts from ${siteName}:
 ${blogsWithRecs.map((b, i) => `${i + 1}. "${b.title}" — ${b.wordCount} words, ${b.publishDate}\n   Topics: ${b.detectedKeywords?.join(", ")}\n   Excerpt: ${b.excerpt}`).join("\n\n")}
 
 Identify posts to merge based on: similar topic overlap, both under 1500 words, or both older than 24 months.
@@ -592,7 +807,7 @@ Return ONLY JSON:
       const criticalCount = blogsWithRecs.reduce((a, b) => a + (b.recommendations?.filter(r => r.type === "critical").length || 0), 0);
       const summaryPrompt = `Write a 3-5 sentence executive summary for this blog audit. Write plain prose only — no bullets, no markdown, no headers.
 
-Site: ${crawlData.siteName} (${url})
+Site: ${siteName} (${url})
 Posts analyzed: ${blogsWithRecs.length}
 Health score: ${healthScore}/100
 Posts over 24 months old: ${blogsWithRecs.filter(b => (b.age || 0) > OUTDATED_MONTHS).length}
@@ -611,7 +826,7 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
       if (crawlDepth === "extended") {
         localStorage.setItem("baa-extended-date", new Date().toDateString());
       }
-      setReport({ siteName: crawlData.siteName, url, blogs: blogsWithRecs, crossAnalysis, healthScore, summary: summary.trim() });
+      setReport({ siteName, url, blogs: blogsWithRecs, crossAnalysis, healthScore, summary: summary.trim() });
       setPhase("done");
     } catch (err) {
       setErrorMsg(err.message || "Something went wrong.");
