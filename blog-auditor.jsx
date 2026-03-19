@@ -447,6 +447,9 @@ export default function App() {
   const [blogSort, setBlogSort] = useState("score-desc");
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
+  const extendedUsedToday = localStorage.getItem("baa-extended-date") === new Date().toDateString();
+  const [crawlDepth, setCrawlDepth] = useState(extendedUsedToday ? "standard" : "standard");
+
   const addLog = (msg) => setLog((l) => [...l, msg]);
 
   const loadDemo = () => {
@@ -457,17 +460,25 @@ export default function App() {
   };
 
   // ── Main pipeline ─────────────────────────────────────────────────────────
+  const DEPTH_CONFIG = {
+    quick:    { label: "up to 10", maxTokens: 4000 },
+    standard: { label: "up to 30", maxTokens: 10000 },
+    extended: { label: "up to 50", maxTokens: 18000 },
+  };
+
   const runAudit = useCallback(async () => {
     setPhase("crawling");
     setLog([]);
     setReport(null);
     setErrorMsg("");
 
+    const { label: depthLabel, maxTokens: crawlTokens } = DEPTH_CONFIG[crawlDepth];
+
     try {
       addLog("🔍 Fetching blog index from " + url + "…");
       addLog("📄 Parsing blog post links…");
 
-      const crawlPrompt = `You are a web crawler and SEO analyst. Given the blog URL "${url}", generate a realistic set of up to 30 blog posts that would plausibly exist on this site. If the site appears to have many posts, generate as many as possible up to 30.
+      const crawlPrompt = `You are a web crawler and SEO analyst. Given the blog URL "${url}", generate a realistic set of ${depthLabel} blog posts that would plausibly exist on this site. If the site appears to have many posts, generate as many as possible up to ${depthLabel.split(" ").pop()}.
 
 Return ONLY valid JSON (no markdown, no backticks) in this exact structure:
 {
@@ -503,7 +514,7 @@ Make the data realistic and varied — some blogs should have issues. Dates shou
       const crawlRaw = await callClaude(
         [{ role: "user", content: crawlPrompt }],
         "You are an SEO crawler. Return only valid JSON, no other text.",
-        10000, passwordRef.current
+        crawlTokens, passwordRef.current
       );
 
       let crawlData;
@@ -597,6 +608,9 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
       );
 
       addLog("📋 Compiling final report…");
+      if (crawlDepth === "extended") {
+        localStorage.setItem("baa-extended-date", new Date().toDateString());
+      }
       setReport({ siteName: crawlData.siteName, url, blogs: blogsWithRecs, crossAnalysis, healthScore, summary: summary.trim() });
       setPhase("done");
     } catch (err) {
@@ -801,6 +815,33 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
               <button onClick={runAudit} disabled={!url} style={{ background: url ? "#3b82f6" : T.bgElevated, color: url ? "#fff" : T.textSubtle, border: "none", padding: "14px 24px", borderRadius: 10, fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", transition: "all 0.2s" }}>
                 Run Audit →
               </button>
+            </div>
+
+            {/* Crawl depth selector */}
+            <div style={{ maxWidth: 560, margin: "12px auto 0", display: "flex", gap: 8 }}>
+              {[
+                { key: "quick", title: "Quick", sub: "Up To 10 Blogs", locked: false },
+                { key: "standard", title: "Standard", sub: "Up To 30 Blogs", locked: false },
+                { key: "extended", title: "Extended", sub: extendedUsedToday ? "🔒 Used Today" : "Up To 50 Blogs · Once per day", locked: extendedUsedToday },
+              ].map(({ key, title, sub, locked }) => {
+                const active = crawlDepth === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => !locked && setCrawlDepth(key)}
+                    disabled={locked}
+                    title={locked ? "Extended audit already used today. Resets at midnight." : undefined}
+                    style={{
+                      flex: 1, padding: "10px 8px", borderRadius: 10, textAlign: "center", cursor: locked ? "not-allowed" : "pointer",
+                      border: `1px solid ${active ? "#3b82f6" : T.bgBorder}`,
+                      background: active ? "rgba(59,130,246,0.12)" : T.bgSurface,
+                      transition: "all 0.2s", opacity: locked ? 0.5 : 1,
+                    }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: active ? "#60a5fa" : T.textSecondary }}>{title}</div>
+                    <div style={{ fontSize: 10, color: T.textMuted, marginTop: 2, fontFamily: "'DM Mono', monospace" }}>{sub}</div>
+                  </button>
+                );
+              })}
             </div>
             <div style={{ maxWidth: 560, margin: "12px auto 0", textAlign: "center" }}>
               <button onClick={loadDemo} style={{ background: "transparent", border: `1px solid ${T.bgBorder}`, color: T.textSubtle, padding: "10px 20px", borderRadius: 8, fontSize: 12, transition: "all 0.2s" }}>
