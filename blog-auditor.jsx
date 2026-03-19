@@ -539,7 +539,7 @@ export default function App() {
       doc.querySelector("a.next.page-numbers") ||
       doc.querySelector('a[rel="next"]') ||
       Array.from(doc.querySelectorAll("a")).find(
-        (a) => /next|›|»/i.test(a.textContent) && a.href
+        (a) => /next|›|»/i.test(a.textContent) && a.getAttribute("href")
       );
     if (!next) return null;
     try {
@@ -698,10 +698,11 @@ export default function App() {
       // ── Step 2: Collect post links across paginated index ──────────────────
       let allPostUrls = findPostLinks(indexDoc, url);
       let currentPageUrl = url;
+      let currentDoc = indexDoc;
       let pagesFetched = 1;
 
-      while (allPostUrls.length < maxPosts && pagesFetched < maxPages) {
-        const nextUrl = findNextPageUrl(indexDoc, currentPageUrl);
+      while (pagesFetched < maxPages) {
+        const nextUrl = findNextPageUrl(currentDoc, currentPageUrl);
         if (!nextUrl) break;
         addLog(`📄 Following pagination (page ${pagesFetched + 1})…`);
         try {
@@ -709,13 +710,11 @@ export default function App() {
           const nextDoc = indexParser.parseFromString(nextHtml, "text/html");
           const newLinks = findPostLinks(nextDoc, url);
           const before = allPostUrls.length;
-          const combined = [...new Set([...allPostUrls, ...newLinks])];
-          allPostUrls = combined;
-          if (allPostUrls.length === before) break; // no new links found
+          allPostUrls = [...new Set([...allPostUrls, ...newLinks])];
+          currentDoc = nextDoc;      // advance doc so next iteration reads the new page's pagination
           currentPageUrl = nextUrl;
           pagesFetched++;
-          // Update indexDoc for next iteration's findNextPageUrl call
-          Object.assign(indexDoc, nextDoc);
+          if (allPostUrls.length === before) break; // page had no new links — we're done
         } catch { break; }
       }
 
