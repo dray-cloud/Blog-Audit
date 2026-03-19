@@ -449,8 +449,24 @@ export default function App() {
 
   const extendedUsedToday = localStorage.getItem("baa-extended-date") === new Date().toDateString();
   const [crawlDepth, setCrawlDepth] = useState(extendedUsedToday ? "standard" : "standard");
+  const [savedReports, setSavedReports] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("baa-reports") || "[]"); } catch { return []; }
+  });
 
   const addLog = (msg) => setLog((l) => [...l, msg]);
+
+  function deleteSavedReport(id) {
+    setSavedReports(prev => {
+      const updated = prev.filter(r => r.id !== id);
+      localStorage.setItem("baa-reports", JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function clearAllSavedReports() {
+    setSavedReports([]);
+    localStorage.removeItem("baa-reports");
+  }
 
   const loadDemo = () => {
     setPhase("done");
@@ -825,7 +841,22 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
       if (crawlDepth === "extended") {
         localStorage.setItem("baa-extended-date", new Date().toDateString());
       }
-      setReport({ siteName, url, blogs: blogsWithRecs, crossAnalysis, healthScore, summary: summary.trim() });
+      const finalReport = { siteName, url, blogs: blogsWithRecs, crossAnalysis, healthScore, summary: summary.trim() };
+      setReport(finalReport);
+      const entry = {
+        id: Date.now().toString(),
+        savedAt: new Date().toISOString(),
+        siteName,
+        url,
+        healthScore,
+        blogCount: blogsWithRecs.length,
+        report: finalReport,
+      };
+      setSavedReports(prev => {
+        const updated = [entry, ...prev.filter(r => r.url !== url)].slice(0, 10);
+        localStorage.setItem("baa-reports", JSON.stringify(updated));
+        return updated;
+      });
       setPhase("done");
     } catch (err) {
       setErrorMsg(err.message || "Something went wrong.");
@@ -1062,6 +1093,43 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
                 ✨ Load Demo Report
               </button>
             </div>
+            {/* Saved Reports repository */}
+            {savedReports.length > 0 && (
+              <div style={{ maxWidth: 560, margin: "28px auto 0" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: T.textSecondary }}>📁 Saved Reports ({savedReports.length})</span>
+                  <button onClick={clearAllSavedReports} style={{ background: "none", border: "none", color: T.textMuted, fontSize: 11, cursor: "pointer", padding: 0 }}>Clear all</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {savedReports.map(entry => (
+                    <div key={entry.id} style={{ background: T.bgSurface, border: `1px solid ${T.bgBorder}`, borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+                      <CircleScore score={entry.healthScore} size={36} stroke={4} trackColor={T.bgElevated} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: T.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.siteName}</div>
+                        <div style={{ fontSize: 11, color: T.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.url} · {entry.blogCount} posts · {new Date(entry.savedAt).toLocaleDateString()}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button onClick={() => { setReport(entry.report); setPhase("done"); setActiveTab("overview"); }}
+                          style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "5px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+                          View
+                        </button>
+                        <button onClick={() => { setUrl(entry.url); runAudit(); }}
+                          style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "5px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}
+                          title="Re-run audit for this site">
+                          ↺
+                        </button>
+                        <button onClick={() => deleteSavedReport(entry.id)}
+                          style={{ background: "none", border: "none", color: T.textMuted, padding: "5px 8px", borderRadius: 6, fontSize: 13, cursor: "pointer" }}
+                          title="Remove from saved reports">
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div style={{ marginTop: 48, display: "flex", justifyContent: "center", gap: 32, flexWrap: "wrap" }}>
               {["Featured Images", "Word Count", "Alt Text AI", "Broken Links", "Content Age", "Merge Analysis"].map(f => (
                 <div key={f} style={{ display: "flex", alignItems: "center", gap: 6, color: T.textSubtle, fontSize: 12 }}>
