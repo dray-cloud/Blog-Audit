@@ -853,7 +853,7 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
         report: finalReport,
       };
       setSavedReports(prev => {
-        const updated = [entry, ...prev.filter(r => r.url !== url)].slice(0, 10);
+        const updated = [entry, ...prev.filter(r => r.url !== url)].slice(0, 20);
         localStorage.setItem("baa-reports", JSON.stringify(updated));
         return updated;
       });
@@ -1110,17 +1110,18 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
                       </div>
                       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                         <button onClick={() => { setReport(entry.report); setPhase("done"); setActiveTab("overview"); }}
+                          title="View saved report — no tokens used"
                           style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "5px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
                           View
                         </button>
                         <button onClick={() => { setUrl(entry.url); runAudit(); }}
-                          style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "5px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}
-                          title="Re-run audit for this site">
+                          title="Re-run audit — fetches latest data and replaces this saved report"
+                          style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "5px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>
                           ↺
                         </button>
                         <button onClick={() => deleteSavedReport(entry.id)}
-                          style={{ background: "none", border: "none", color: T.textMuted, padding: "5px 8px", borderRadius: 6, fontSize: 13, cursor: "pointer" }}
-                          title="Remove from saved reports">
+                          title="Remove this report from saved history"
+                          style={{ background: "none", border: "none", color: T.textMuted, padding: "5px 8px", borderRadius: 6, fontSize: 13, cursor: "pointer" }}>
                           ×
                         </button>
                       </div>
