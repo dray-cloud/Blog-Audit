@@ -512,28 +512,35 @@ export default function App() {
       'article a[rel="bookmark"]',
       "h1.entry-title a, h2.entry-title a, h3.entry-title a",
       ".post-title a, .entry-title a",
-      "article h2 a, article h3 a",
+      "article h2 a, article h3 a, article h4 a",
       ".blog-post a, .post-card a",
       pathSel,
     ];
+
+    function collectLink(a) {
+      const href = a.href || a.getAttribute("href") || "";
+      if (!href) return;
+      let abs;
+      try { abs = new URL(href, baseUrl).href; } catch { return; }
+      if (!abs.startsWith(base)) return;
+      if (seen.has(abs)) return;
+      if (/\/(tag|category|author|page|feed)\//i.test(abs)) return;
+      if (/\.(xml|rss|json)$/i.test(new URL(abs).pathname)) return;
+      if (abs === baseUrl || abs.replace(/\/$/, "") === baseUrl.replace(/\/$/, "")) return;
+      seen.add(abs);
+      links.push(abs);
+    }
+
     const seen = new Set();
     const links = [];
     for (const sel of selectors) {
-      doc.querySelectorAll(sel).forEach((a) => {
-        const href = a.href || a.getAttribute("href") || "";
-        if (!href) return;
-        let abs;
-        try { abs = new URL(href, baseUrl).href; } catch { return; }
-        // Only same-domain, non-index links that look like posts
-        if (!abs.startsWith(base)) return;
-        if (seen.has(abs)) return;
-        // Filter out tag/category/author/page index pages
-        if (/\/(tag|category|author|page|feed)\//i.test(abs)) return;
-        if (abs === baseUrl || abs.replace(/\/$/, "") === baseUrl.replace(/\/$/, "")) return;
-        seen.add(abs);
-        links.push(abs);
-      });
+      doc.querySelectorAll(sel).forEach(collectLink);
       if (links.length > 0) break; // Use first selector that yields results
+    }
+    // Always run pathSel as an additive pass — catches posts missed when only
+    // one heading level matched above (e.g. HubSpot mixes h2 + h4 across cards)
+    if (blogPath.length > 1) {
+      doc.querySelectorAll(pathSel).forEach(collectLink);
     }
     // Fallback: any same-domain links that look like posts (have path depth > 1)
     if (links.length === 0) {
@@ -559,6 +566,7 @@ export default function App() {
     const next =
       doc.querySelector("a.next.page-numbers") ||
       doc.querySelector('a[rel="next"]') ||
+      doc.querySelector('link[rel="next"]') ||
       Array.from(doc.querySelectorAll("a")).find(
         (a) => /next|›|»/i.test(a.textContent) && a.getAttribute("href")
       );
