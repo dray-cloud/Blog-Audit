@@ -449,6 +449,8 @@ export default function App() {
 
   const extendedUsedToday = localStorage.getItem("baa-extended-date") === new Date().toDateString();
   const [crawlDepth, setCrawlDepth] = useState(extendedUsedToday ? "standard" : "standard");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [customMaxPosts, setCustomMaxPosts] = useState(75);
   const [savedReports, setSavedReports] = useState(() => {
     try { return JSON.parse(localStorage.getItem("baa-reports") || "[]"); } catch { return []; }
   });
@@ -503,13 +505,16 @@ export default function App() {
   // Extract blog post links from an index/listing page
   function findPostLinks(doc, baseUrl) {
     const base = new URL(baseUrl).origin;
+    // Build a path-aware selector so /blog-newsletter → a[href*="/blog-newsletter/"]
+    const blogPath = new URL(baseUrl).pathname.replace(/\/$/, "");
+    const pathSel = blogPath.length > 1 ? `a[href*="${blogPath}/"]` : 'a[href*="/blog/"]';
     const selectors = [
       'article a[rel="bookmark"]',
       "h1.entry-title a, h2.entry-title a, h3.entry-title a",
       ".post-title a, .entry-title a",
       "article h2 a, article h3 a",
       ".blog-post a, .post-card a",
-      'a[href*="/blog/"]',
+      pathSel,
     ];
     const seen = new Set();
     const links = [];
@@ -698,7 +703,9 @@ export default function App() {
     setReport(null);
     setErrorMsg("");
 
-    const { maxPosts, maxPages } = DEPTH_CONFIG[crawlDepth];
+    const depthConfig = DEPTH_CONFIG[crawlDepth];
+    const maxPosts = advancedOpen ? Math.min(Math.max(customMaxPosts, 1), 300) : depthConfig.maxPosts;
+    const maxPages = advancedOpen ? Math.ceil(maxPosts / 10) + 2 : depthConfig.maxPages;
 
     try {
       // ── Step 1: Fetch blog index ────────────────────────────────────────────
@@ -1088,6 +1095,37 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
                 );
               })}
             </div>
+            {/* Advanced Scanning */}
+            <div style={{ maxWidth: 560, margin: "10px auto 0", textAlign: "center" }}>
+              <button
+                onClick={() => setAdvancedOpen(o => !o)}
+                style={{ background: "transparent", border: "none", color: T.textMuted, fontSize: 12, cursor: "pointer", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <span style={{ display: "inline-block", transform: advancedOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", fontSize: 10 }}>▶</span>
+                Advanced Scanning
+              </button>
+              {advancedOpen && (
+                <div style={{ marginTop: 10, background: T.bgSurface, border: `1px solid ${T.bgBorder}`, borderRadius: 10, padding: "14px 18px", textAlign: "left" }}>
+                  <div style={{ fontSize: 12, color: T.textSecondary, marginBottom: 10 }}>
+                    For sites with more than 50 blog posts. Specify a custom limit and the scanner will crawl as many pages as needed to reach it.
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <label style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap" }}>Max posts to scan:</label>
+                    <input
+                      type="number"
+                      min={51}
+                      max={300}
+                      value={customMaxPosts}
+                      onChange={(e) => setCustomMaxPosts(Math.min(300, Math.max(1, parseInt(e.target.value) || 75)))}
+                      style={{ width: 80, background: T.inputBg, border: `1px solid ${T.inputBorder}`, color: T.textPrimary, borderRadius: 6, padding: "6px 10px", fontSize: 13, outline: "none" }}
+                    />
+                    <span style={{ fontSize: 11, color: T.textMuted }}>max 300</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: T.textSubtle, marginTop: 8 }}>
+                    Note: larger scans use more AI tokens and take longer to complete.
+                  </div>
+                </div>
+              )}
+            </div>
             <div style={{ maxWidth: 560, margin: "12px auto 0", textAlign: "center" }}>
               <button onClick={loadDemo} style={{ background: "transparent", border: `1px solid ${T.bgBorder}`, color: T.textSubtle, padding: "10px 20px", borderRadius: 8, fontSize: 12, transition: "all 0.2s" }}>
                 ✨ Load Demo Report
@@ -1164,7 +1202,7 @@ Content gaps: ${crossAnalysis.contentGaps?.slice(0, 5).join(", ") || "none"}`;
             <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
             <div style={{ color: "#f87171", fontSize: 16, marginBottom: 8 }}>Audit Failed</div>
             <div style={{ color: T.textMuted, fontSize: 13, marginBottom: 24 }}>{errorMsg}</div>
-            <button onClick={() => { setPhase("idle"); setUrl(""); }} style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "10px 20px", borderRadius: 8, fontSize: 13 }}>
+            <button onClick={() => setPhase("idle")} style={{ background: T.bgElevated, border: `1px solid ${T.bgBorder}`, color: T.textSecondary, padding: "10px 20px", borderRadius: 8, fontSize: 13 }}>
               Try Again
             </button>
           </div>
